@@ -1,0 +1,17 @@
+{
+    "manifest_version": 3,
+    "name": "GradescopeToCal",
+    "description": "This extension automatically takes assignments due from the current Gradescope page and adds them to your Google Calendar.",
+    "version": "1.0.0",
+    "permissions": [
+        "tabs"
+    ],
+    "action": {
+        "default_popup": "index.html",
+        "default_icon": {
+            "16": "assets/icon16.png",
+            "48": "assets/icon48.png",
+            "128": "assets/icon128.png"
+        }
+    }
+}
