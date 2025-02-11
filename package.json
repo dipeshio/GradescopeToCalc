@@ -1,0 +1,25 @@
+{
+  "dependencies": {
+    "puppeteer": "^24.1.1"
+  },
+  "name": "gradescopetocalc",
+  "version": "1.0.0",
+  "description": "��#\u0000 \u0000G\u0000r\u0000a\u0000d\u0000e\u0000s\u0000c\u0000o\u0000p\u0000e\u0000T\u0000o\u0000C\u0000a\u0000l\u0000c\u0000\r\u0000 \u0000\r\u0000 \u0000\r\u0000 \u0000U\u0000p\u0000d\u0000a\u0000t\u0000e\u0000d\u0000 \u0000r\u0000e\u0000a\u0000d\u0000m\u0000e\u0000\r\u0000 \u0000",
+  "main": "script.js",
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dipeshio/GradescopeToCalc.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dipeshio/GradescopeToCalc/issues"
+  },
+  "homepage": "https://github.com/dipeshio/GradescopeToCalc#readme"
+}
