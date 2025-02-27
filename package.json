@@ -1,12 +1,13 @@
 {
   "dependencies": {
-    "puppeteer": "^24.1.1"
+    "@tailwindcss/cli": "^4.0.9",
+    "puppeteer": "^24.1.1",
+    "tailwindcss": "^4.0.9"
   },
   "name": "gradescopetocalc",
   "version": "1.0.0",
   "description": "��#\u0000 \u0000G\u0000r\u0000a\u0000d\u0000e\u0000s\u0000c\u0000o\u0000p\u0000e\u0000T\u0000o\u0000C\u0000a\u0000l\u0000c\u0000\r\u0000 \u0000\r\u0000 \u0000\r\u0000 \u0000U\u0000p\u0000d\u0000a\u0000t\u0000e\u0000d\u0000 \u0000r\u0000e\u0000a\u0000d\u0000m\u0000e\u0000\r\u0000 \u0000",
   "main": "scripts/script.js",
-  "devDependencies": {},
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
