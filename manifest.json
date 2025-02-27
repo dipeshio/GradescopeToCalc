@@ -2,24 +2,35 @@
     "manifest_version": 3,
     "name": "GradescopeToCal",
     "version": "0.0.1",
-    "description": "Automatically adds gradescope assignments to a user's Google Calendar..",
+    "description": "Automatically adds Gradescope assignments to a user's Google Calendar.",
     "icons": {
         "16": "assets/icons/icon16.png",
         "48": "assets/icons/icon48.png",
         "128": "assets/icons/icon128.png"
     },
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "assets/icons/icon16.png",
+            "48": "assets/icons/icon48.png",
+            "128": "assets/icons/icon128.png"
+        }
+    },
+    "permissions": [
+        "activeTab",
+        "storage",
+        "scripting"
+    ],
     "content_scripts": [
         {
-            "js": [
-                "script.js"
-            ]
+            "matches": ["*://*.gradescope.com/*"],
+            "js": ["./scripts/script.js"]
         }
     ],
     "web_accessible_resources": [
         {
-            "resources": [
-                "script.js"
-            ]
+            "resources": ["./scripts/script.js"],
+            "matches": ["*://*.gradescope.com/*"]
         }
     ]
 }
