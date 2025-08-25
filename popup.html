@@ -1,36 +1,129 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>GradescopeToCal</title>
-  <link rel="stylesheet" href="src/styles.css">
-  <link href=”./output.css” rel=”stylesheet”>
-  <script src="./scripts/popup.js"></script>
-  <script src="./scripts/script.js"></script>
-
+  <title>Gradescope to Google Calendar</title>
+  <link rel="stylesheet" href="popup.css">
+  <meta charset="utf-8">
 </head>
 
-
 <body>
-  <h1>GradescopeToCal</h1>
-<div id="AAS" class="assignments-container"></div>
-<table class="assignmentTable">
-  <thead>
-    <tr>
-      <th>Name</th>
-      <th>Date</th>
-      <th>Add</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>The Sliding Mr. Bones (Next Stop, Pottersville)</td>
-      <td>Malcolm Lockyer</td>
-      <td>1961</td>
-    </tr>
-  </tbody>
-</table>
-  <button id="syncButton">Sync Assignments</button> <!-- call the function parseAssignments when button is clicked -->
-  <div id="status"></div>
-  <div id="assignmentList" class="assignments-container"></div>
+  <div class="container">
+    <header>
+      <h1>📅 Gradescope to Calendar</h1>
+      <p class="subtitle">Sync your assignments automatically</p>
+    </header>
+
+    <main>
+      <!-- OAuth Configuration -->
+      <div class="config-section" id="configSection">
+        <h3>🔧 Setup Required</h3>
+        <p class="config-help">Enter your Google OAuth Client ID to get started:</p>
+        <div class="config-form">
+          <input type="text" id="clientIdInput" class="config-input" 
+                 placeholder="your-client-id.apps.googleusercontent.com">
+          <button id="saveConfigButton" class="btn btn-primary">Save Configuration</button>
+        </div>
+        <div class="config-links">
+          <a href="#" id="setupGuideLink" class="help-link">📖 How to get Client ID</a>
+        </div>
+      </div>
+
+      <!-- Authentication Status -->
+      <div class="auth-section" id="authSection" style="display: none;">
+        <div id="authStatus" class="status-indicator">
+          <span class="status-dot" id="authDot"></span>
+          <span id="authText">Checking authentication...</span>
+        </div>
+        <button id="authButton" class="btn btn-primary" style="display: none;">
+          Connect Google Calendar
+        </button>
+        <button id="reconfigureButton" class="btn btn-secondary" style="display: none;">
+          Change Client ID
+        </button>
+      </div>
+
+      <!-- Current Course Info -->
+      <div class="course-section" id="courseSection" style="display: none;">
+        <h3>📚 Current Course</h3>
+        <div id="courseInfo" class="course-info">
+          <span id="courseName">No course detected</span>
+        </div>
+      </div>
+
+      <!-- Assignments List -->
+      <div class="assignments-section" id="assignmentsSection" style="display: none;">
+        <h3>📝 Assignments Found</h3>
+        <div id="assignmentsList" class="assignments-list"></div>
+      </div>
+
+      <!-- Sync Controls -->
+      <div class="sync-section">
+        <div class="sync-controls">
+          <button id="syncButton" class="btn btn-primary">
+            <span id="syncIcon">🔄</span>
+            <span id="syncText">Sync to Calendar</span>
+          </button>
+          
+          <label class="toggle-label">
+            <input type="checkbox" id="autoSyncToggle">
+            <span class="toggle-slider"></span>
+            Auto-sync assignments
+          </label>
+        </div>
+
+        <div id="syncStatus" class="sync-status" style="display: none;">
+          <div id="syncProgress" class="progress-bar">
+            <div id="syncProgressFill" class="progress-fill"></div>
+          </div>
+          <div id="syncMessage" class="sync-message"></div>
+        </div>
+      </div>
+
+      <!-- Sync Results -->
+      <div class="results-section" id="resultsSection" style="display: none;">
+        <h3>📊 Sync Results</h3>
+        <div id="syncResults" class="sync-results"></div>
+      </div>
+
+      <!-- Settings -->
+      <div class="settings-section">
+        <details class="settings-details">
+          <summary>⚙️ Settings</summary>
+          <div class="settings-content">
+            <label>
+              Sync Interval:
+              <select id="syncInterval">
+                <option value="30">30 minutes</option>
+                <option value="60" selected>1 hour</option>
+                <option value="180">3 hours</option>
+                <option value="360">6 hours</option>
+              </select>
+            </label>
+            
+            <div class="sync-stats">
+              <div class="stat">
+                <span class="stat-label">Synced Assignments:</span>
+                <span id="syncedCount">0</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Last Sync:</span>
+                <span id="lastSync">Never</span>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </main>
+
+    <footer>
+      <div class="help-section">
+        <p class="help-text">
+          💡 Navigate to a Gradescope course page to see assignments
+        </p>
+      </div>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
 </body>
 </html>

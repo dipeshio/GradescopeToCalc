@@ -1,36 +1,30 @@
 {
-    "manifest_version": 3,
-    "name": "GradescopeToCal",
-    "version": "0.0.1",
-    "description": "Automatically adds Gradescope assignments to a user's Google Calendar.",
-    "icons": {
-        "16": "assets/icons/icon16.png",
-        "48": "assets/icons/icon48.png",
-        "128": "assets/icons/icon128.png"
-    },
-    "action": {
-        "default_popup": "popup.html",
-        "default_icon": {
-            "16": "assets/icons/icon16.png",
-            "48": "assets/icons/icon48.png",
-            "128": "assets/icons/icon128.png"
-        }
-    },
-    "permissions": [
-        "activeTab",
-        "storage",
-        "scripting"
-    ],
-    "content_scripts": [
-        {
-            "matches": ["*://*.gradescope.com/*"],
-            "js": ["./scripts/script.js"]
-        }
-    ],
-    "web_accessible_resources": [
-        {
-            "resources": ["./scripts/script.js"],
-            "matches": ["*://*.gradescope.com/*"]
-        }
-    ]
+  "manifest_version": 3,
+  "name": "Gradescope to Google Calendar",
+  "version": "1.0.0",
+  "description": "Automatically sync Gradescope assignments to Google Calendar",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "identity"
+  ],
+  "host_permissions": [
+    "https://www.gradescope.com/*",
+    "https://www.googleapis.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.gradescope.com/courses/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Gradescope to Calendar Sync"
+  }
 }
