@@ -41,6 +41,7 @@ class PopupManager {
     this.syncIcon = document.getElementById('syncIcon');
     this.syncText = document.getElementById('syncText');
     this.syncStatus = document.getElementById('syncStatus');
+    this.forceSyncButton = document.getElementById('forceSyncButton');
     this.syncProgress = document.getElementById('syncProgress');
     this.syncProgressFill = document.getElementById('syncProgressFill');
     this.syncMessage = document.getElementById('syncMessage');
@@ -57,6 +58,10 @@ class PopupManager {
     this.autoSyncStatus = document.getElementById('autoSyncStatus');
     this.debugAutoSync = document.getElementById('debugAutoSync');
     this.testAutoSync = document.getElementById('testAutoSync');
+    this.testTaskCreation = document.getElementById('testTaskCreation');
+    this.listAllTasks = document.getElementById('listAllTasks');
+    this.listTaskLists = document.getElementById('listTaskLists');
+    this.fixTaskListId = document.getElementById('fixTaskListId');
   }
 
   setupEventListeners() {
@@ -73,6 +78,7 @@ class PopupManager {
 
     // Sync button
     this.syncButton.addEventListener('click', () => this.syncAssignments());
+    this.forceSyncButton.addEventListener('click', () => this.forceSyncAssignments());
 
     // Auto-sync toggle
     this.autoSyncToggle.addEventListener('change', (e) => {
@@ -88,6 +94,48 @@ class PopupManager {
     this.clientIdInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
         this.saveConfiguration();
+      }
+    });
+
+    // Debug buttons
+    this.debugAutoSync.addEventListener('click', () => {
+      this.sendMessage({ type: 'DEBUG_AUTO_SYNC' });
+      console.log('Debug auto-sync triggered - check background console');
+    });
+
+    this.testAutoSync.addEventListener('click', () => {
+      this.sendMessage({ type: 'TEST_AUTO_SYNC' });
+      console.log('Test auto-sync triggered - check background console');
+    });
+
+    this.testTaskCreation.addEventListener('click', () => {
+      this.sendMessage({ type: 'TEST_TASK_CREATION' });
+      console.log('Test task creation triggered - check background console');
+    });
+
+    this.listAllTasks.addEventListener('click', () => {
+      this.sendMessage({ type: 'LIST_ALL_TASKS' });
+      console.log('List all tasks triggered - check background console');
+    });
+
+    this.listTaskLists.addEventListener('click', () => {
+      this.sendMessage({ type: 'LIST_TASK_LISTS' });
+      console.log('List task lists triggered - check background console');
+    });
+
+    this.fixTaskListId.addEventListener('click', async () => {
+      try {
+        const response = await this.sendMessage({ type: 'FIX_TASK_LIST_ID' });
+        if (response && response.success) {
+          console.log('✅ Task list ID fixed successfully');
+          this.showSuccess('Task list ID updated! Try syncing again.');
+        } else {
+          console.error('❌ Failed to fix task list ID:', response?.error);
+          this.showError('Failed to fix task list ID: ' + (response?.error || 'Unknown error'));
+        }
+      } catch (error) {
+        console.error('❌ Error fixing task list ID:', error);
+        this.showError('Error fixing task list ID: ' + error.message);
       }
     });
   }
@@ -298,6 +346,14 @@ class PopupManager {
   }
 
   async syncAssignments() {
+    await this._performSync('SYNC_TO_CALENDAR');
+  }
+
+  async forceSyncAssignments() {
+    await this._performSync('FORCE_SYNC_TO_CALENDAR');
+  }
+
+  async _performSync(messageType) {
     if (this.syncInProgress || !this.isAuthenticated) {
       return;
     }
@@ -312,13 +368,14 @@ class PopupManager {
 
     try {
       const response = await this.sendMessage({
-        type: 'SYNC_TO_CALENDAR',
+        type: messageType,
         assignments: this.currentAssignments
       });
 
       if (response.success) {
         this.displaySyncResults(response.results);
-        this.showSuccess(`Synced ${response.results.length} assignments`);
+        const message = response.message || `Synced ${response.results.length} assignments`;
+        this.showSuccess(message);
         await this.loadSyncStats(); // Refresh stats
       } else {
         throw new Error(response.error);
@@ -433,16 +490,57 @@ class PopupManager {
         } else {
           this.lastSync.textContent = 'Never';
         }
+
+        // Update auto-sync status
+        if (this.autoSyncStatus) {
+          if (response.autoSyncEnabled) {
+            const intervalText = `${response.syncInterval}min`;
+            if (response.lastAutoSync) {
+              const lastAutoDate = new Date(response.lastAutoSync);
+              this.autoSyncStatus.textContent = `Active (${intervalText}) - Last: ${lastAutoDate.toLocaleTimeString()}`;
+            } else {
+              this.autoSyncStatus.textContent = `Active (${intervalText})`;
+            }
+            this.autoSyncStatus.style.color = '#28a745'; // Green
+          } else {
+            this.autoSyncStatus.textContent = 'Inactive';
+            this.autoSyncStatus.style.color = '#dc3545'; // Red
+          }
+        }
+
+        // Show debug info
+        console.log('Sync Status Details:', {
+          hasClientId: response.hasClientId,
+          isAuthenticated: response.isAuthenticated,
+          hasAssignments: response.hasAssignments,
+          assignmentCount: response.assignmentCount,
+          courseName: response.courseName,
+          autoSyncEnabled: response.autoSyncEnabled,
+          lastError: response.lastError
+        });
+
+        if (response.lastError) {
+          console.warn('Last sync error:', response.lastError, 'at', response.lastErrorTime);
+        }
+
       } else {
         // Set default values if we can't get stats
         this.syncedCount.textContent = '0';
         this.lastSync.textContent = 'Never';
+        if (this.autoSyncStatus) {
+          this.autoSyncStatus.textContent = 'Unknown';
+          this.autoSyncStatus.style.color = '#6c757d';
+        }
       }
     } catch (error) {
       console.error('Error loading sync stats:', error);
       // Set default values on error
       this.syncedCount.textContent = '0';
       this.lastSync.textContent = 'Never';
+      if (this.autoSyncStatus) {
+        this.autoSyncStatus.textContent = 'Error';
+        this.autoSyncStatus.style.color = '#dc3545';
+      }
     }
   }
 

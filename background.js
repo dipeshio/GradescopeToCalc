@@ -3,7 +3,7 @@
 class TaskManager {
   constructor() {
     this.accessToken = null;
-    this.taskListId = '@default'; // Use default task list
+    this.taskListId = '@default'; // Will be updated to actual list ID
     this.syncedAssignments = new Map(); // Track synced assignments
     this.clientId = null;
   }
@@ -12,6 +12,59 @@ class TaskManager {
   setClientId(clientId) {
     this.clientId = clientId;
     console.log('Client ID set for authentication');
+  }
+
+  // Get the correct task list ID (find default or first available)
+  async ensureCorrectTaskListId() {
+    try {
+      console.log('🔍 Ensuring correct task list ID...');
+      
+      const response = await fetch(
+        'https://www.googleapis.com/tasks/v1/users/@me/lists',
+        {
+          headers: {
+            'Authorization': `Bearer ${this.accessToken}`
+          }
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (data.items && data.items.length > 0) {
+          // Try to find a list with ID '@default' first
+          let targetList = data.items.find(list => list.id === '@default');
+          
+          // If no @default, use the first available list
+          if (!targetList) {
+            targetList = data.items[0];
+            console.log(`📝 No @default list found, using first list: "${targetList.title}" (${targetList.id})`);
+          } else {
+            console.log(`📝 Found @default list: "${targetList.title}"`);
+          }
+          
+          // Update the task list ID
+          const oldId = this.taskListId;
+          this.taskListId = targetList.id;
+          
+          if (oldId !== this.taskListId) {
+            console.log(`🔄 Updated task list ID: "${oldId}" → "${this.taskListId}"`);
+          }
+          
+          return true;
+        } else {
+          console.error('❌ No task lists found in account');
+          return false;
+        }
+      } else {
+        const errorText = await response.text();
+        console.error('❌ Failed to fetch task lists:', response.status, errorText);
+        return false;
+      }
+    } catch (error) {
+      console.error('❌ Error ensuring task list ID:', error);
+      return false;
+    }
   }
 
   // Load stored access token
@@ -26,7 +79,14 @@ class TaskManager {
           if (tokenAge < oneHour) {
             this.accessToken = result.googleAccessToken;
             console.log('Loaded stored access token');
-            resolve(true);
+            
+            // Ensure we have the correct task list ID
+            this.ensureCorrectTaskListId().then(() => {
+              resolve(true);
+            }).catch((listError) => {
+              console.warn('Warning: Could not update task list ID:', listError);
+              resolve(true); // Still resolve true even if list update fails
+            });
           } else {
             console.log('Stored token expired, need to re-authenticate');
             resolve(false);
@@ -107,7 +167,13 @@ class TaskManager {
             tokenTimestamp: Date.now()
           });
           
-          resolve(token);
+          // Ensure we have the correct task list ID after authentication
+          this.ensureCorrectTaskListId().then(() => {
+            resolve(token);
+          }).catch((listError) => {
+            console.warn('Warning: Could not update task list ID:', listError);
+            resolve(token); // Still resolve with token even if list update fails
+          });
         } catch (error) {
           reject(new Error('Failed to extract access token: ' + error.message));
         }
@@ -189,6 +255,13 @@ class TaskManager {
   async createTask(assignment) {
     const task = this.buildTaskObject(assignment);
     
+    console.log('🔍 DETAILED CREATE REQUEST DEBUG:');
+    console.log('  Assignment data:', JSON.stringify(assignment, null, 2));
+    console.log('  Task object:', JSON.stringify(task, null, 2));
+    console.log('  API URL:', `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks`);
+    console.log('  Task list ID:', this.taskListId);
+    console.log('  Access token (first 20 chars):', this.accessToken ? this.accessToken.substring(0, 20) + '...' : 'null');
+    
     const response = await fetch(
       `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks`,
       {
@@ -203,14 +276,28 @@ class TaskManager {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Task creation failed:', response.status, response.statusText, errorText);
+      console.error('❌ Task creation failed:', {
+        status: response.status,
+        statusText: response.statusText,
+        url: `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks`,
+        taskListId: this.taskListId,
+        errorResponse: errorText,
+        requestBody: JSON.stringify(task, null, 2),
+        headers: {
+          'Authorization': `Bearer ${this.accessToken ? this.accessToken.substring(0, 20) + '...' : 'null'}`,
+          'Content-Type': 'application/json'
+        }
+      });
       
-      // Handle authentication errors
+      // Handle specific error cases
       if (response.status === 401) {
-        console.log('Access token expired, clearing stored token');
+        console.log('🔑 Access token expired, clearing stored token');
         chrome.storage.local.remove(['googleAccessToken', 'tokenTimestamp']);
         this.accessToken = null;
         throw new Error('Authentication expired. Please reconnect to Google Tasks.');
+      } else if (response.status === 400) {
+        console.log('⚠️ Bad request - likely invalid due date format or missing required field');
+        throw new Error(`Invalid request format: ${errorText}`);
       }
       
       throw new Error(`Failed to create task: ${response.status} ${response.statusText} - ${errorText}`);
@@ -239,19 +326,21 @@ class TaskManager {
       throw new Error('Valid Task ID is required for update');
     }
     
-    // Validate task ID format
-    if (!/^[a-zA-Z0-9_-]+$/.test(taskId)) {
+    // Validate task ID format (Google Tasks IDs are typically longer and contain various characters)
+    if (!taskId || taskId.length < 5) {
       throw new Error(`Invalid task ID format: ${taskId}`);
     }
     
     const task = this.buildTaskObject(assignment);
+    // Add the ID to the task object for update requests
+    task.id = taskId;
     
-    console.log(`Updating task ${taskId} with data:`, JSON.stringify(task, null, 2));
+    console.log(`🔄 Updating task ${taskId} with data:`, JSON.stringify(task, null, 2));
     
     const response = await fetch(
       `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks/${taskId}`,
       {
-        method: 'PUT',
+        method: 'PATCH', // Use PATCH for partial updates
         headers: {
           'Authorization': `Bearer ${this.accessToken}`,
           'Content-Type': 'application/json',
@@ -262,14 +351,32 @@ class TaskManager {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Task update failed:', response.status, response.statusText, errorText);
+      console.error('❌ Task update failed:', {
+        status: response.status,
+        statusText: response.statusText,
+        url: `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks/${taskId}`,
+        taskListId: this.taskListId,
+        taskId: taskId,
+        errorResponse: errorText,
+        requestBody: JSON.stringify(task, null, 2),
+        headers: {
+          'Authorization': `Bearer ${this.accessToken ? this.accessToken.substring(0, 20) + '...' : 'null'}`,
+          'Content-Type': 'application/json'
+        }
+      });
       
-      // Handle authentication errors
+      // Handle specific error cases
       if (response.status === 401) {
-        console.log('Access token expired, clearing stored token');
+        console.log('🔑 Access token expired, clearing stored token');
         chrome.storage.local.remove(['googleAccessToken', 'tokenTimestamp']);
         this.accessToken = null;
         throw new Error('Authentication expired. Please reconnect to Google Tasks.');
+      } else if (response.status === 404) {
+        console.log('📭 Task not found, may have been deleted externally');
+        throw new Error(`Task ${taskId} not found. It may have been deleted.`);
+      } else if (response.status === 400) {
+        console.log('⚠️ Bad request - likely invalid due date format or missing required field');
+        throw new Error(`Invalid request format: ${errorText}`);
       }
       
       throw new Error(`Failed to update task: ${response.status} ${response.statusText} - ${errorText}`);
@@ -286,7 +393,7 @@ class TaskManager {
 
     await this.saveSyncedAssignments();
     
-    console.log('Updated task:', updatedTask);
+    console.log('✅ Task updated successfully:', updatedTask.title);
     return updatedTask;
   }
 
@@ -295,82 +402,144 @@ class TaskManager {
     if (!taskId) return null;
 
     try {
-      const response = await fetch(
-        `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks/${taskId}`,
-        {
-          headers: {
-            'Authorization': `Bearer ${this.accessToken}`,
-          }
+      const url = `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks/${taskId}`;
+      console.log(`🔍 Fetching task ${taskId} from: ${url}`);
+      
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json'
         }
-      );
+      });
 
+      console.log(`📡 Task fetch response status: ${response.status}`);
+      
       if (response.status === 404) {
-        console.log(`Task ${taskId} not found (404)`);
+        console.log(`❌ Task ${taskId} not found (404)`);
         return null; // Task doesn't exist
       }
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('Failed to get task:', response.status, response.statusText, errorText);
+        console.error(`❌ Failed to get task ${taskId}:`, response.status, response.statusText, errorText);
         throw new Error(`Failed to get task: ${response.status} ${response.statusText}`);
       }
 
-      return await response.json();
+      const task = await response.json();
+      console.log(`✅ Task ${taskId} found:`, task);
+      return task;
     } catch (error) {
-      console.error('Error getting task:', error);
+      console.error(`❌ Error getting task ${taskId}:`, error);
       return null;
     }
   }
 
   // Build task object for Google Tasks API
   buildTaskObject(assignment) {
-    const title = assignment.fullTitle;
+    console.log('🔧 Building task object from assignment:', {
+      id: assignment.id,
+      title: assignment.title,
+      fullTitle: assignment.fullTitle,
+      status: assignment.status,
+      statusAbbr: assignment.statusAbbr,
+      courseName: assignment.courseName,
+      dueDate: assignment.dueDate,
+      dueDateType: typeof assignment.dueDate
+    });
+
+    // Validate required fields
+    if (!assignment.fullTitle || assignment.fullTitle.trim() === '') {
+      throw new Error('Assignment title is required but empty');
+    }
+
+    const title = assignment.fullTitle.trim();
+    
+    // Build notes with safe string handling
+    const courseName = assignment.courseName || 'Unknown Course';
+    const status = assignment.status || 'Unknown Status';
+    let notes = `Assignment from ${courseName}\n\nStatus: ${status}\n\nSynced from Gradescope`;
     
     // Format due date and time for Tasks API
     let due = null;
-    let notes = `Assignment from ${assignment.courseName}\n\nStatus: ${assignment.status}\n\nSynced from Gradescope`;
-    
     if (assignment.dueDate) {
-      const dueDate = new Date(assignment.dueDate);
-      // Ensure the date is valid
-      if (!isNaN(dueDate.getTime())) {
-        // Google Tasks API only accepts date (no time), so extract date only
-        // Format: YYYY-MM-DD (RFC 3339 date format)
-        due = dueDate.toISOString().split('T')[0];
-        
-        // Add the time information to the notes since Tasks API doesn't support specific times
-        const timeString = dueDate.toLocaleTimeString('en-US', { 
-          hour: 'numeric', 
-          minute: '2-digit',
-          hour12: true 
+      try {
+        const dueDate = new Date(assignment.dueDate);
+        console.log('Processing due date:', {
+          original: assignment.dueDate,
+          parsed: dueDate,
+          isValid: !isNaN(dueDate.getTime()),
+          timestamp: dueDate.getTime()
         });
-        notes += `\n\n⏰ Due Time: ${timeString}`;
         
-        console.log('Formatted due date:', due, 'time:', timeString, 'from original:', assignment.dueDate);
-      } else {
-        console.warn('Invalid due date for assignment:', assignment.title, assignment.dueDate);
+        // Ensure the date is valid
+        if (!isNaN(dueDate.getTime())) {
+          // Google Tasks API requires RFC3339 format with timezone
+          due = dueDate.toISOString();
+          
+          // Add the time information to the notes for better visibility
+          const timeString = dueDate.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit',
+            hour12: true 
+          });
+          notes += `\n\n⏰ Due Time: ${timeString}`;
+          
+          console.log('✅ Due date formatted successfully:', {
+            rfc3339: due,
+            displayTime: timeString,
+            originalInput: assignment.dueDate
+          });
+        } else {
+          console.warn('⚠️ Invalid due date detected:', assignment.dueDate);
+          // Don't include due date if invalid
+        }
+      } catch (dateError) {
+        console.error('❌ Error processing due date:', dateError, 'for date:', assignment.dueDate);
+        // Don't include due date if there's an error
       }
+    } else {
+      console.log('ℹ️ No due date provided for assignment');
     }
 
-    console.log('Building task object:', {
-      title,
-      originalDueDate: assignment.dueDate,
-      formattedDue: due,
-      status: assignment.statusAbbr === 'SUBMITTED' ? 'completed' : 'needsAction'
+    // Determine task status
+    let taskStatus = 'needsAction'; // default
+    if (assignment.statusAbbr === 'SUBMITTED' || assignment.statusAbbr === 'COMPLETE') {
+      taskStatus = 'completed';
+    }
+
+    console.log('Task status determination:', {
+      originalStatus: assignment.status,
+      originalStatusAbbr: assignment.statusAbbr,
+      taskStatus: taskStatus
     });
 
+    // Build the task object with validation
     const task = {
       title: title,
       notes: notes,
-      status: assignment.statusAbbr === 'SUBMITTED' ? 'completed' : 'needsAction'
+      status: taskStatus
     };
 
-    // Add due date if available
+    // Only add due date if it's valid
     if (due) {
       task.due = due;
     }
 
-    console.log('Final task object:', JSON.stringify(task, null, 2));
+    console.log('✅ Final task object created:', JSON.stringify(task, null, 2));
+    
+    // Validate the final task object
+    if (!task.title || task.title.length === 0) {
+      throw new Error('Task title cannot be empty');
+    }
+    if (task.title.length > 1024) {
+      console.warn('⚠️ Task title is very long, truncating...');
+      task.title = task.title.substring(0, 1021) + '...';
+    }
+    if (task.notes && task.notes.length > 8192) {
+      console.warn('⚠️ Task notes are very long, truncating...');
+      task.notes = task.notes.substring(0, 8189) + '...';
+    }
+
     return task;
   }
 
@@ -403,10 +572,10 @@ class TaskManager {
   }
 
   // Sync all assignments to tasks with duplicate prevention
-  async syncAssignments(assignments) {
+  async syncAssignments(assignments, forceSync = false) {
     const results = [];
     
-    console.log(`Starting sync for ${assignments.length} assignments`);
+    console.log(`Starting sync for ${assignments.length} assignments ${forceSync ? '(FORCE MODE)' : ''}`);
     this.debugStorageState();
     
     for (const assignment of assignments) {
@@ -420,11 +589,16 @@ class TaskManager {
 
         console.log(`Processing assignment: ${assignment.title} (ID: ${assignment.id})`);
         
-        // Check if assignment needs updating
-        if (!this.needsUpdate(assignment)) {
-          console.log(`Assignment "${assignment.title}" is up to date - skipping`);
-          results.push({ assignment: assignment.title, success: true, skipped: 'up_to_date' });
-          continue;
+        // Check if assignment needs updating (now async) - unless force mode
+        if (!forceSync) {
+          const needsUpdate = await this.needsUpdate(assignment);
+          if (!needsUpdate) {
+            console.log(`Assignment "${assignment.title}" is up to date - skipping`);
+            results.push({ assignment: assignment.title, success: true, skipped: 'up_to_date' });
+            continue;
+          }
+        } else {
+          console.log(`🔄 FORCE MODE: Processing ${assignment.title} regardless of status`);
         }
 
         // Check for duplicates before processing
@@ -438,9 +612,23 @@ class TaskManager {
         results.push({ assignment: assignment.title, success: true, task: result });
         
       } catch (error) {
-        console.error(`Failed to sync assignment "${assignment.title}":`, error);
-        console.error('Assignment data:', assignment);
-        console.error('Full error:', error);
+        console.error(`❌ Failed to sync assignment "${assignment.title}":`, error);
+        console.error('📋 Assignment data details:', {
+          id: assignment.id,
+          title: assignment.title,
+          fullTitle: assignment.fullTitle,
+          status: assignment.status,
+          statusAbbr: assignment.statusAbbr,
+          courseName: assignment.courseName,
+          dueDate: assignment.dueDate,
+          dueDateType: typeof assignment.dueDate,
+          allFields: Object.keys(assignment)
+        });
+        console.error('🔍 Full error object:', {
+          message: error.message,
+          stack: error.stack,
+          name: error.name
+        });
         this.debugStorageState(); // Debug storage state on error
         results.push({ assignment: assignment.title, success: false, error: error.message });
       }
@@ -580,7 +768,7 @@ class TaskManager {
   }
 
   // Check if assignment needs update
-  needsUpdate(assignment) {
+  async needsUpdate(assignment) {
     const syncData = this.syncedAssignments.get(assignment.id);
     
     if (!syncData) {
@@ -607,7 +795,25 @@ class TaskManager {
       return true;
     }
     
-    console.log(`Assignment ${assignment.title} is up to date - skipping`);
+    // NEW: Verify the task still exists in Google Calendar
+    console.log(`🔍 Verifying task ${syncData.taskId} still exists for: ${assignment.title}`);
+    try {
+      const existingTask = await this.getTask(syncData.taskId);
+      if (!existingTask) {
+        console.log(`📭 Task ${syncData.taskId} no longer exists in Google Calendar - needs recreation for: ${assignment.title}`);
+        // Clear the invalid task ID from storage
+        this.clearTaskId(assignment.id);
+        return true; // Task was deleted externally, needs recreation
+      }
+      console.log(`✅ Task ${syncData.taskId} exists in Google Calendar`);
+    } catch (error) {
+      console.warn(`⚠️ Error checking task existence for ${assignment.title}:`, error.message);
+      // If we can't verify, assume it needs recreation to be safe
+      this.clearTaskId(assignment.id);
+      return true;
+    }
+    
+    console.log(`✅ Assignment ${assignment.title} is up to date and task exists - skipping`);
     return false; // No changes needed
   }
 
@@ -850,6 +1056,213 @@ async function testAutoSync() {
   await performAutoSync();
 }
 
+// List all task lists available to the user
+async function listTaskLists() {
+  console.log('📋 Listing all task lists...');
+  
+  try {
+    if (!taskManager.accessToken) {
+      console.log('🔑 No access token, attempting to authenticate...');
+      await taskManager.authenticate();
+    }
+    
+    const response = await fetch(
+      'https://www.googleapis.com/tasks/v1/users/@me/lists',
+      {
+        headers: {
+          'Authorization': `Bearer ${taskManager.accessToken}`
+        }
+      }
+    );
+    
+    if (response.ok) {
+      const data = await response.json();
+      console.log('✅ Available task lists:', data);
+      
+      if (data.items && data.items.length > 0) {
+        console.log(`📊 Found ${data.items.length} task lists:`);
+        data.items.forEach((list, index) => {
+          console.log(`  ${index + 1}. "${list.title}" (ID: ${list.id})`);
+          console.log(`     Kind: ${list.kind}, Updated: ${list.updated}`);
+          if (list.id === '@default') {
+            console.log('     ⭐ This is the @default list');
+          }
+          if (list.id === taskManager.taskListId) {
+            console.log('     🎯 This is the list we\'re using');
+          }
+        });
+        
+        console.log(`🎯 Extension is using list ID: "${taskManager.taskListId}"`);
+        
+        // Check if our list exists
+        const ourList = data.items.find(list => list.id === taskManager.taskListId);
+        if (ourList) {
+          console.log(`✅ Our task list "${ourList.title}" exists`);
+        } else {
+          console.error(`❌ Our task list "${taskManager.taskListId}" NOT FOUND!`);
+          console.log('💡 Available list IDs:', data.items.map(l => l.id));
+        }
+        
+      } else {
+        console.log('📭 No task lists found');
+      }
+    } else {
+      const errorText = await response.text();
+      console.error('❌ Failed to list task lists:', response.status, errorText);
+    }
+    
+  } catch (error) {
+    console.error('❌ Error listing task lists:', error);
+  }
+}
+
+  // List all tasks to see what's actually in Google Tasks
+  async function listAllTasks() {
+    console.log('📋 Listing all tasks in Google Tasks...');
+    
+    try {
+      if (!taskManager.accessToken) {
+        console.log('🔑 No access token, attempting to authenticate...');
+        await taskManager.authenticate();
+      }
+      
+             const url = `https://www.googleapis.com/tasks/v1/lists/${taskManager.taskListId}/tasks?maxResults=100`;
+      console.log(`📋 Fetching all tasks from: ${url}`);
+      
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${taskManager.accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      console.log(`📡 List tasks response status: ${response.status}`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ All tasks in Google Tasks:', data);
+        console.log(`📊 Raw API response:`, data);
+        
+        if (data.items && data.items.length > 0) {
+                 console.log(`📊 Found ${data.items.length} tasks:`);
+       data.items.forEach((task, index) => {
+         console.log(`  ${index + 1}. "${task.title}" (ID: ${task.id})`);
+         console.log(`     Status: ${task.status}, Due: ${task.due || 'No due date'}`);
+         console.log(`     Updated: ${task.updated}`);
+         if (task.notes) {
+           console.log(`     Notes: ${task.notes.substring(0, 100)}...`);
+         }
+         console.log('     ---');
+       });
+       
+       // Check if our test task exists by ID
+       const testTaskId = 'NGJiNjM0a05PUXpBODVLRw';
+       const testTask = data.items.find(task => task.id === testTaskId);
+       if (testTask) {
+         console.log(`✅ Test task found in list: "${testTask.title}" (ID: ${testTask.id})`);
+       } else {
+         console.log(`❌ Test task NOT found in list (ID: ${testTaskId})`);
+         console.log('🔍 This suggests the task was created but is being filtered out');
+       }
+          
+          // Check for our specific tasks
+          const gradescopeTasks = data.items.filter(task => 
+            task.notes && task.notes.includes('Synced from Gradescope')
+          );
+          console.log(`🎓 Gradescope tasks found: ${gradescopeTasks.length}`);
+          gradescopeTasks.forEach(task => {
+            console.log(`  - "${task.title}" (Due: ${task.due})`);
+          });
+          
+          return data.items;
+        } else {
+          console.log('📭 No tasks found in Google Tasks');
+          return [];
+        }
+      } else {
+        const errorText = await response.text();
+        console.error('❌ Failed to list tasks:', response.status, errorText);
+        return [];
+      }
+    } catch (error) {
+      console.error('❌ Error listing tasks:', error);
+      return [];
+    }
+  }
+
+// Test task creation with minimal and full sample assignments
+async function testTaskCreation() {
+  console.log('🧪 Testing task creation with different data formats...');
+  
+  // Test 1: Minimal valid task
+  const minimalTask = {
+    title: 'Minimal Test Task'
+  };
+  
+  // Test 2: Sample assignment matching our format
+  const sampleAssignment = {
+    id: 'test-assignment-' + Date.now(),
+    title: 'Test Assignment',
+    fullTitle: 'TEST 101: Test Assignment (TEST)',
+    status: 'Not Submitted',
+    statusAbbr: 'NS',
+    courseName: 'TEST 101',
+    dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // Tomorrow
+  };
+  
+  console.log('Sample assignment data:', sampleAssignment);
+  
+  try {
+    if (!taskManager.accessToken) {
+      console.log('🔑 No access token, attempting to authenticate...');
+      await taskManager.authenticate();
+    }
+    
+    console.log('🧪 Test 1: Creating minimal task directly...');
+    // Test direct API call with minimal data
+    const minimalResponse = await fetch(
+      `https://www.googleapis.com/tasks/v1/lists/${taskManager.taskListId}/tasks`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${taskManager.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(minimalTask)
+      }
+    );
+    
+    if (minimalResponse.ok) {
+      const minimalResult = await minimalResponse.json();
+      console.log('✅ Minimal task created successfully:', minimalResult);
+      
+      // Clean up minimal task
+      await fetch(
+        `https://www.googleapis.com/tasks/v1/lists/${taskManager.taskListId}/tasks/${minimalResult.id}`,
+        {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${taskManager.accessToken}` }
+        }
+      );
+      console.log('🗑️ Minimal task cleaned up');
+    } else {
+      const errorText = await minimalResponse.text();
+      console.error('❌ Minimal task creation failed:', minimalResponse.status, errorText);
+    }
+    
+         console.log('🧪 Test 2: Creating task through our buildTaskObject function...');
+     const result = await taskManager.createTask(sampleAssignment);
+     console.log('✅ Full task created successfully:', result);
+     
+     // DON'T clean up - let's see if the task persists
+     console.log('🔍 Test task created - check if it persists in the next List Tasks call');
+     console.log('💡 Task ID to look for:', result.id);
+    
+  } catch (error) {
+    console.error('❌ Test task creation failed:', error);
+  }
+}
+
 initializeExtension();
 
 // Handle messages from content script and popup
@@ -864,7 +1277,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Keep message channel open for async response
 
       case 'SYNC_TO_CALENDAR':
-        syncToTasks(request.assignments, sendResponse);
+        syncToTasks(request.assignments, sendResponse, false);
+        return true;
+
+      case 'FORCE_SYNC_TO_CALENDAR':
+        syncToTasks(request.assignments, sendResponse, true);
         return true;
 
       case 'GET_SYNC_STATUS':
@@ -891,6 +1308,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       case 'TEST_AUTO_SYNC':
         testAutoSync();
         sendResponse({ success: true });
+        return true;
+
+      case 'TEST_TASK_CREATION':
+        testTaskCreation();
+        sendResponse({ success: true });
+        return true;
+
+      case 'LIST_ALL_TASKS':
+        listAllTasks();
+        sendResponse({ success: true });
+        return true;
+
+      case 'LIST_TASK_LISTS':
+        listTaskLists();
+        sendResponse({ success: true });
+        return true;
+
+      case 'FIX_TASK_LIST_ID':
+        taskManager.ensureCorrectTaskListId().then(() => {
+          sendResponse({ success: true, message: 'Task list ID updated successfully' });
+        }).catch((error) => {
+          sendResponse({ success: false, error: error.message });
+        });
         return true;
 
       default:
@@ -943,17 +1383,27 @@ async function handleAssignmentsData(data, sendResponse) {
 }
 
 // Sync assignments to tasks
-async function syncToTasks(assignments, sendResponse) {
+async function syncToTasks(assignments, sendResponse, forceSync = false) {
   try {
-    console.log('Starting manual sync with cleanup...');
+    console.log(`Starting ${forceSync ? 'FORCE' : 'manual'} sync with cleanup...`);
     
     // First, clean up any orphaned tasks
     await taskManager.cleanupOrphanedTasks(assignments);
     
-    // Then sync current assignments
-    const results = await taskManager.syncAssignments(assignments);
+    // Then sync current assignments (with optional force mode)
+    const results = await taskManager.syncAssignments(assignments, forceSync);
     
-    sendResponse({ success: true, results: results });
+    // Update last sync time
+    chrome.storage.local.set({ 
+      lastSyncTime: new Date().toISOString(),
+      lastSyncType: forceSync ? 'force_manual' : 'manual'
+    });
+    
+    sendResponse({ 
+      success: true, 
+      results: results,
+      message: `${forceSync ? 'Force s' : 'S'}ynced ${results.length} assignments to Google Tasks`
+    });
   } catch (error) {
     console.error('Error syncing to tasks:', error);
     sendResponse({ success: false, error: error.message });

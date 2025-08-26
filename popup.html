@@ -59,10 +59,15 @@
       <!-- Sync Controls -->
       <div class="sync-section">
         <div class="sync-controls">
-          <button id="syncButton" class="btn btn-primary">
-            <span id="syncIcon">🔄</span>
-            <span id="syncText">Sync to Tasks</span>
-          </button>
+          <div style="display: flex; gap: 8px;">
+            <button id="syncButton" class="btn btn-primary" style="flex: 1;">
+              <span id="syncIcon">🔄</span>
+              <span id="syncText">Sync to Tasks</span>
+            </button>
+            <button id="forceSyncButton" class="btn" style="background: #dc3545; color: white; font-size: 11px; padding: 6px 10px;" title="Force sync all assignments, ignoring up-to-date status">
+              🔥 Force
+            </button>
+          </div>
           
           <label class="toggle-label">
             <input type="checkbox" id="autoSyncToggle">
@@ -117,9 +122,13 @@
             </div>
             
             <div class="debug-section" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e9ecef;">
-              <div style="display: flex; gap: 8px;">
-                <button id="debugAutoSync" class="btn" style="background: #6c757d; color: white; font-size: 11px; padding: 6px 8px;">Debug Auto-Sync</button>
-                <button id="testAutoSync" class="btn" style="background: #17a2b8; color: white; font-size: 11px; padding: 6px 8px;">Test Auto-Sync</button>
+              <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+                <button id="debugAutoSync" class="btn" style="background: #6c757d; color: white; font-size: 9px; padding: 3px 5px;">Debug</button>
+                <button id="testAutoSync" class="btn" style="background: #17a2b8; color: white; font-size: 9px; padding: 3px 5px;">Test Sync</button>
+                <button id="testTaskCreation" class="btn" style="background: #28a745; color: white; font-size: 9px; padding: 3px 5px;">Test API</button>
+                <button id="listAllTasks" class="btn" style="background: #ffc107; color: black; font-size: 9px; padding: 3px 5px;">List Tasks</button>
+                <button id="listTaskLists" class="btn" style="background: #fd7e14; color: white; font-size: 9px; padding: 3px 5px;">List Lists</button>
+                <button id="fixTaskListId" class="btn" style="background: #dc3545; color: white; font-size: 9px; padding: 3px 5px;">Fix List ID</button>
               </div>
             </div>
           </div>
