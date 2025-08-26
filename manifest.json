@@ -6,7 +6,8 @@
   "permissions": [
     "activeTab",
     "storage",
-    "identity"
+    "identity",
+    "alarms"
   ],
   "host_permissions": [
     "https://www.gradescope.com/*",

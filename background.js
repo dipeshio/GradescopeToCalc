@@ -806,6 +806,50 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// Debug function to check auto-sync status
+async function debugAutoSync() {
+  console.log('=== AUTO-SYNC DEBUG ===');
+  
+  // Check alarms
+  const alarms = await chrome.alarms.getAll();
+  console.log('Active alarms:', alarms);
+  
+  // Check stored data
+  chrome.storage.local.get([
+    'syncInterval', 
+    'lastSyncTime', 
+    'lastAutoSyncTime', 
+    'latestAssignments',
+    'googleClientId',
+    'googleAccessToken'
+  ], (result) => {
+    console.log('Storage data:', {
+      syncInterval: result.syncInterval,
+      lastSyncTime: result.lastSyncTime,
+      lastAutoSyncTime: result.lastAutoSyncTime,
+      hasAssignments: !!(result.latestAssignments && result.latestAssignments.assignments),
+      assignmentCount: result.latestAssignments?.assignments?.length || 0,
+      courseName: result.latestAssignments?.courseName,
+      hasClientId: !!result.googleClientId,
+      hasToken: !!result.googleAccessToken
+    });
+    
+    console.log('Task manager state:', {
+      hasClientId: !!taskManager.clientId,
+      hasToken: !!taskManager.accessToken,
+      syncedCount: taskManager.syncedAssignments.size
+    });
+    
+    console.log('=== END AUTO-SYNC DEBUG ===');
+  });
+}
+
+// Test auto-sync manually
+async function testAutoSync() {
+  console.log('🧪 Testing auto-sync manually...');
+  await performAutoSync();
+}
+
 initializeExtension();
 
 // Handle messages from content script and popup
@@ -837,6 +881,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'UPDATE_SYNC_INTERVAL':
         updateSyncInterval(request.interval, sendResponse);
+        return true;
+
+      case 'DEBUG_AUTO_SYNC':
+        debugAutoSync();
+        sendResponse({ success: true });
+        return true;
+
+      case 'TEST_AUTO_SYNC':
+        testAutoSync();
+        sendResponse({ success: true });
         return true;
 
       default:
@@ -910,20 +964,45 @@ async function syncToTasks(assignments, sendResponse) {
 async function getSyncStatus(sendResponse) {
   try {
     const syncedCount = taskManager.syncedAssignments.size;
-    const lastSync = await new Promise((resolve) => {
-      chrome.storage.local.get(['lastSyncTime'], (result) => {
-        resolve(result.lastSyncTime);
+    
+    // Get detailed sync information
+    const syncData = await new Promise((resolve) => {
+      chrome.storage.local.get([
+        'lastSyncTime', 
+        'lastAutoSyncTime', 
+        'lastSyncType',
+        'syncInterval',
+        'latestAssignments',
+        'lastSyncError',
+        'lastSyncErrorTime'
+      ], (result) => {
+        resolve(result);
       });
     });
+
+    // Get alarm information
+    const alarms = await chrome.alarms.getAll();
+    const autoSyncAlarm = alarms.find(alarm => alarm.name === 'autoSync');
 
     const response = {
       success: true,
       syncedCount: syncedCount,
-      lastSync: lastSync,
-      isAuthenticated: !!taskManager.accessToken
+      lastSync: syncData.lastSyncTime,
+      lastAutoSync: syncData.lastAutoSyncTime,
+      lastSyncType: syncData.lastSyncType || 'unknown',
+      syncInterval: syncData.syncInterval || 5,
+      isAuthenticated: !!taskManager.accessToken,
+      hasClientId: !!taskManager.clientId,
+      hasAssignments: !!(syncData.latestAssignments && syncData.latestAssignments.assignments),
+      assignmentCount: syncData.latestAssignments?.assignments?.length || 0,
+      courseName: syncData.latestAssignments?.courseName,
+      autoSyncEnabled: !!autoSyncAlarm,
+      nextAutoSync: autoSyncAlarm?.scheduledTime,
+      lastError: syncData.lastSyncError,
+      lastErrorTime: syncData.lastSyncErrorTime
     };
 
-    console.log('Sending sync status:', response);
+    console.log('Sending detailed sync status:', response);
     sendResponse(response);
   } catch (error) {
     console.error('Error getting sync status:', error);

@@ -54,6 +54,9 @@ class PopupManager {
     this.syncInterval = document.getElementById('syncInterval');
     this.syncedCount = document.getElementById('syncedCount');
     this.lastSync = document.getElementById('lastSync');
+    this.autoSyncStatus = document.getElementById('autoSyncStatus');
+    this.debugAutoSync = document.getElementById('debugAutoSync');
+    this.testAutoSync = document.getElementById('testAutoSync');
   }
 
   setupEventListeners() {
