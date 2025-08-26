@@ -142,11 +142,11 @@ class PopupManager {
   updateAuthUI(authenticated = this.isAuthenticated, message = null) {
     if (authenticated) {
       this.authDot.className = 'status-dot connected';
-      this.authText.textContent = message || 'Connected to Google Calendar';
+      this.authText.textContent = message || 'Connected to Google Tasks';
       this.authButton.style.display = 'none';
     } else {
       this.authDot.className = 'status-dot error';
-      this.authText.textContent = message || 'Not connected to Google Calendar';
+      this.authText.textContent = message || 'Not connected to Google Tasks';
       this.authButton.style.display = 'block';
     }
   }
@@ -353,7 +353,7 @@ class PopupManager {
     } else {
           this.syncButton.disabled = false;
     this.syncIcon.className = '';
-    this.syncText.textContent = 'Sync to Calendar';
+    this.syncText.textContent = 'Sync to Tasks';
       setTimeout(() => {
         this.syncStatus.style.display = 'none';
       }, 2000);
@@ -386,7 +386,7 @@ class PopupManager {
     return new Promise((resolve) => {
       chrome.storage.local.get(['autoSync', 'syncInterval'], (result) => {
         this.autoSyncToggle.checked = result.autoSync || false;
-        this.syncInterval.value = result.syncInterval || 60;
+        this.syncInterval.value = result.syncInterval || 5;
         resolve();
       });
     });
@@ -399,9 +399,22 @@ class PopupManager {
   }
 
   async updateSyncInterval(minutes) {
-    return new Promise((resolve) => {
-      chrome.storage.local.set({ syncInterval: minutes }, resolve);
-    });
+    try {
+      // Update local storage
+      await new Promise((resolve) => {
+        chrome.storage.local.set({ syncInterval: minutes }, resolve);
+      });
+
+      // Notify background script to update timer
+      await this.sendMessage({ 
+        type: 'UPDATE_SYNC_INTERVAL', 
+        interval: minutes 
+      });
+
+      console.log(`Sync interval updated to ${minutes} minutes`);
+    } catch (error) {
+      console.error('Error updating sync interval:', error);
+    }
   }
 
   async loadSyncStats() {
@@ -567,7 +580,7 @@ class PopupManager {
 
 1. Go to Google Cloud Console (console.cloud.google.com)
 2. Create a new project or select existing one
-3. Enable Google Calendar API
+3. Enable Google Tasks API
 4. Go to "APIs & Services" → "Credentials"
 5. Click "Create Credentials" → "OAuth client ID"
 6. Choose "Web application" as application type

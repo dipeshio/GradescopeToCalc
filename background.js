@@ -1,9 +1,9 @@
 // Background service worker for Gradescope to Google Calendar extension
 
-class CalendarManager {
+class TaskManager {
   constructor() {
     this.accessToken = null;
-    this.calendarId = 'primary'; // Use primary calendar
+    this.taskListId = '@default'; // Use default task list
     this.syncedAssignments = new Map(); // Track synced assignments
     this.clientId = null;
   }
@@ -14,11 +14,46 @@ class CalendarManager {
     console.log('Client ID set for authentication');
   }
 
-  // Authenticate with Google Calendar API
+  // Load stored access token
+  async loadStoredToken() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['googleAccessToken', 'tokenTimestamp'], (result) => {
+        if (result.googleAccessToken && result.tokenTimestamp) {
+          // Check if token is less than 1 hour old (tokens typically last 1 hour)
+          const tokenAge = Date.now() - result.tokenTimestamp;
+          const oneHour = 60 * 60 * 1000;
+          
+          if (tokenAge < oneHour) {
+            this.accessToken = result.googleAccessToken;
+            console.log('Loaded stored access token');
+            resolve(true);
+          } else {
+            console.log('Stored token expired, need to re-authenticate');
+            resolve(false);
+          }
+        } else {
+          console.log('No stored token found');
+          resolve(false);
+        }
+      });
+    });
+  }
+
+  // Authenticate with Google Tasks API
   async authenticate() {
     if (!this.clientId) {
       throw new Error('Client ID not configured. Please set up OAuth configuration first.');
     }
+
+    // Try to load stored token first
+    const hasValidToken = await this.loadStoredToken();
+    if (hasValidToken) {
+      console.log('Using stored access token');
+      return this.accessToken;
+    }
+
+    console.log('Starting new authentication with Client ID:', this.clientId);
+    console.log('Required scopes: tasks');
 
     return new Promise((resolve, reject) => {
       if (!chrome.identity) {
@@ -28,6 +63,7 @@ class CalendarManager {
 
       // Use launchWebAuthFlow for dynamic OAuth with custom client ID
       const authUrl = this.buildAuthUrl();
+      console.log('Auth URL:', authUrl);
       
       chrome.identity.launchWebAuthFlow({
         url: authUrl,
@@ -63,7 +99,14 @@ class CalendarManager {
           }
           
           this.accessToken = token;
-          console.log('Successfully authenticated with Google Calendar');
+          console.log('Successfully authenticated with Google Tasks');
+          
+          // Store token persistently
+          chrome.storage.local.set({ 
+            googleAccessToken: token,
+            tokenTimestamp: Date.now()
+          });
+          
           resolve(token);
         } catch (error) {
           reject(new Error('Failed to extract access token: ' + error.message));
@@ -83,7 +126,7 @@ class CalendarManager {
       client_id: this.clientId,
       response_type: 'token',
       redirect_uri: redirectUri,
-      scope: 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
+      scope: 'https://www.googleapis.com/auth/tasks',
       access_type: 'online'
     });
     
@@ -98,47 +141,86 @@ class CalendarManager {
     return params.get('access_token');
   }
 
-  // Create or update a calendar event
-  async createOrUpdateEvent(assignment) {
+  // Create or update a task
+  async createOrUpdateTask(assignment) {
     if (!this.accessToken) {
       await this.authenticate();
     }
 
-    const eventId = this.generateEventId(assignment);
-    const existingEvent = await this.getEvent(eventId);
-
-    if (existingEvent) {
-      return await this.updateEvent(eventId, assignment);
+    const taskId = this.generateTaskId(assignment);
+    console.log(`Processing assignment: ${assignment.title} (ID: ${assignment.id})`);
+    console.log(`Found stored task ID: ${taskId}`);
+    
+    if (taskId && taskId.trim() !== '') {
+      // Validate task ID format (Google Tasks IDs are typically alphanumeric)
+      if (!/^[a-zA-Z0-9_-]+$/.test(taskId)) {
+        console.warn(`Invalid task ID format: ${taskId}, creating new task`);
+        this.clearTaskId(assignment.id);
+        return await this.createTask(assignment);
+      }
+      
+      // Try to get the existing task first
+      console.log(`Checking if task ${taskId} exists...`);
+      const existingTask = await this.getTask(taskId);
+      if (existingTask) {
+        console.log(`Updating existing task ${taskId} for assignment: ${assignment.title}`);
+        try {
+          return await this.updateTask(taskId, assignment);
+        } catch (error) {
+          console.log(`Failed to update task ${taskId}, error:`, error.message);
+          console.log(`Creating new task for: ${assignment.title}`);
+          // Clear the invalid task ID and create a new task
+          this.clearTaskId(assignment.id);
+          return await this.createTask(assignment);
+        }
+      } else {
+        console.log(`Task ID ${taskId} found in storage but task doesn't exist, creating new task: ${assignment.title}`);
+        // Task ID exists in our records but task was deleted, clear it and create new one
+        this.clearTaskId(assignment.id);
+        return await this.createTask(assignment);
+      }
     } else {
-      return await this.createEvent(assignment);
+      console.log(`No valid task ID found, creating new task: ${assignment.title}`);
+      return await this.createTask(assignment);
     }
   }
 
-  // Create a new calendar event
-  async createEvent(assignment) {
-    const event = this.buildEventObject(assignment);
+  // Create a new task
+  async createTask(assignment) {
+    const task = this.buildTaskObject(assignment);
     
     const response = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${this.calendarId}/events`,
+      `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks`,
       {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${this.accessToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(event)
+        body: JSON.stringify(task)
       }
     );
 
     if (!response.ok) {
-      throw new Error(`Failed to create event: ${response.statusText}`);
+      const errorText = await response.text();
+      console.error('Task creation failed:', response.status, response.statusText, errorText);
+      
+      // Handle authentication errors
+      if (response.status === 401) {
+        console.log('Access token expired, clearing stored token');
+        chrome.storage.local.remove(['googleAccessToken', 'tokenTimestamp']);
+        this.accessToken = null;
+        throw new Error('Authentication expired. Please reconnect to Google Tasks.');
+      }
+      
+      throw new Error(`Failed to create task: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
-    const createdEvent = await response.json();
+    const createdTask = await response.json();
     
-    // Store the mapping between assignment and event
+    // Store the mapping between assignment and task
     this.syncedAssignments.set(assignment.id, {
-      eventId: createdEvent.id,
+      taskId: createdTask.id,
       lastStatus: assignment.statusAbbr,
       lastSync: new Date().toISOString()
     });
@@ -146,52 +228,75 @@ class CalendarManager {
     // Save to storage
     await this.saveSyncedAssignments();
     
-    console.log('Created calendar event:', createdEvent);
-    return createdEvent;
+    console.log('Created task:', createdTask);
+    console.log('Task due at:', task.due);
+    return createdTask;
   }
 
-  // Update an existing calendar event
-  async updateEvent(eventId, assignment) {
-    const event = this.buildEventObject(assignment);
+  // Update an existing task
+  async updateTask(taskId, assignment) {
+    if (!taskId || taskId.trim() === '') {
+      throw new Error('Valid Task ID is required for update');
+    }
+    
+    // Validate task ID format
+    if (!/^[a-zA-Z0-9_-]+$/.test(taskId)) {
+      throw new Error(`Invalid task ID format: ${taskId}`);
+    }
+    
+    const task = this.buildTaskObject(assignment);
+    
+    console.log(`Updating task ${taskId} with data:`, JSON.stringify(task, null, 2));
     
     const response = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${this.calendarId}/events/${eventId}`,
+      `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks/${taskId}`,
       {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${this.accessToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(event)
+        body: JSON.stringify(task)
       }
     );
 
     if (!response.ok) {
-      throw new Error(`Failed to update event: ${response.statusText}`);
+      const errorText = await response.text();
+      console.error('Task update failed:', response.status, response.statusText, errorText);
+      
+      // Handle authentication errors
+      if (response.status === 401) {
+        console.log('Access token expired, clearing stored token');
+        chrome.storage.local.remove(['googleAccessToken', 'tokenTimestamp']);
+        this.accessToken = null;
+        throw new Error('Authentication expired. Please reconnect to Google Tasks.');
+      }
+      
+      throw new Error(`Failed to update task: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
-    const updatedEvent = await response.json();
+    const updatedTask = await response.json();
     
     // Update the stored mapping
     this.syncedAssignments.set(assignment.id, {
-      eventId: updatedEvent.id,
+      taskId: updatedTask.id,
       lastStatus: assignment.statusAbbr,
       lastSync: new Date().toISOString()
     });
 
     await this.saveSyncedAssignments();
     
-    console.log('Updated calendar event:', updatedEvent);
-    return updatedEvent;
+    console.log('Updated task:', updatedTask);
+    return updatedTask;
   }
 
-  // Get an existing event by ID
-  async getEvent(eventId) {
-    if (!eventId) return null;
+  // Get an existing task by ID
+  async getTask(taskId) {
+    if (!taskId) return null;
 
     try {
       const response = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/${this.calendarId}/events/${eventId}`,
+        `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks/${taskId}`,
         {
           headers: {
             'Authorization': `Bearer ${this.accessToken}`,
@@ -200,90 +305,253 @@ class CalendarManager {
       );
 
       if (response.status === 404) {
-        return null; // Event doesn't exist
+        console.log(`Task ${taskId} not found (404)`);
+        return null; // Task doesn't exist
       }
 
       if (!response.ok) {
-        throw new Error(`Failed to get event: ${response.statusText}`);
+        const errorText = await response.text();
+        console.error('Failed to get task:', response.status, response.statusText, errorText);
+        throw new Error(`Failed to get task: ${response.status} ${response.statusText}`);
       }
 
       return await response.json();
     } catch (error) {
-      console.error('Error getting event:', error);
+      console.error('Error getting task:', error);
       return null;
     }
   }
 
-  // Build event object for Google Calendar API
-  buildEventObject(assignment) {
+  // Build task object for Google Tasks API
+  buildTaskObject(assignment) {
     const title = assignment.fullTitle;
-    const description = `Assignment from ${assignment.courseName}\n\nStatus: ${assignment.status}\n\nSynced from Gradescope`;
     
-    // Set due date as end time, start time 1 hour before
-    const dueDate = new Date(assignment.dueDate);
-    const startDate = new Date(dueDate.getTime() - 60 * 60 * 1000); // 1 hour before
-
-    return {
-      summary: title,
-      description: description,
-      start: {
-        dateTime: startDate.toISOString(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
-      },
-      end: {
-        dateTime: dueDate.toISOString(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
-      },
-      colorId: this.getColorForStatus(assignment.statusAbbr),
-      reminders: {
-        useDefault: false,
-        overrides: [
-          { method: 'popup', minutes: 60 }, // 1 hour before
-          { method: 'popup', minutes: 1440 } // 1 day before
-        ]
+    // Format due date and time for Tasks API
+    let due = null;
+    let notes = `Assignment from ${assignment.courseName}\n\nStatus: ${assignment.status}\n\nSynced from Gradescope`;
+    
+    if (assignment.dueDate) {
+      const dueDate = new Date(assignment.dueDate);
+      // Ensure the date is valid
+      if (!isNaN(dueDate.getTime())) {
+        // Google Tasks API only accepts date (no time), so extract date only
+        // Format: YYYY-MM-DD (RFC 3339 date format)
+        due = dueDate.toISOString().split('T')[0];
+        
+        // Add the time information to the notes since Tasks API doesn't support specific times
+        const timeString = dueDate.toLocaleTimeString('en-US', { 
+          hour: 'numeric', 
+          minute: '2-digit',
+          hour12: true 
+        });
+        notes += `\n\n⏰ Due Time: ${timeString}`;
+        
+        console.log('Formatted due date:', due, 'time:', timeString, 'from original:', assignment.dueDate);
+      } else {
+        console.warn('Invalid due date for assignment:', assignment.title, assignment.dueDate);
       }
-    };
-  }
-
-  // Get color ID based on assignment status
-  getColorForStatus(status) {
-    switch (status) {
-      case 'SUBMITTED':
-        return '10'; // Green
-      case 'IP':
-        return '5'; // Yellow/Orange
-      default:
-        return '1'; // Default blue
     }
+
+    console.log('Building task object:', {
+      title,
+      originalDueDate: assignment.dueDate,
+      formattedDue: due,
+      status: assignment.statusAbbr === 'SUBMITTED' ? 'completed' : 'needsAction'
+    });
+
+    const task = {
+      title: title,
+      notes: notes,
+      status: assignment.statusAbbr === 'SUBMITTED' ? 'completed' : 'needsAction'
+    };
+
+    // Add due date if available
+    if (due) {
+      task.due = due;
+    }
+
+    console.log('Final task object:', JSON.stringify(task, null, 2));
+    return task;
   }
 
-  // Generate consistent event ID from assignment
-  generateEventId(assignment) {
+  // Generate consistent task ID from assignment
+  generateTaskId(assignment) {
     const syncData = this.syncedAssignments.get(assignment.id);
-    return syncData ? syncData.eventId : null;
+    const taskId = syncData ? syncData.taskId : null;
+    console.log(`Generated task ID for assignment ${assignment.id}: ${taskId}`);
+    return taskId;
   }
 
-  // Sync all assignments to calendar
+  // Clear stored task ID for an assignment (when task is deleted or invalid)
+  clearTaskId(assignmentId) {
+    console.log(`Clearing task ID for assignment: ${assignmentId}`);
+    console.log(`Before clearing - stored data:`, this.syncedAssignments.get(assignmentId));
+    this.syncedAssignments.delete(assignmentId);
+    this.saveSyncedAssignments();
+    console.log(`Cleared stored task ID for assignment: ${assignmentId}`);
+  }
+
+  // Debug function to inspect current storage state
+  debugStorageState() {
+    console.log('=== STORAGE DEBUG ===');
+    console.log('Synced assignments count:', this.syncedAssignments.size);
+    console.log('All stored assignments:');
+    for (const [assignmentId, data] of this.syncedAssignments.entries()) {
+      console.log(`  Assignment ${assignmentId}:`, data);
+    }
+    console.log('=== END DEBUG ===');
+  }
+
+  // Sync all assignments to tasks with duplicate prevention
   async syncAssignments(assignments) {
     const results = [];
+    
+    console.log(`Starting sync for ${assignments.length} assignments`);
+    this.debugStorageState();
     
     for (const assignment of assignments) {
       try {
         // Skip assignments without due dates
         if (!assignment.dueDate) {
           console.log(`Skipping assignment "${assignment.title}" - no due date`);
+          results.push({ assignment: assignment.title, success: true, skipped: 'no_due_date' });
           continue;
         }
 
-        const result = await this.createOrUpdateEvent(assignment);
-        results.push({ assignment: assignment.title, success: true, event: result });
+        console.log(`Processing assignment: ${assignment.title} (ID: ${assignment.id})`);
+        
+        // Check if assignment needs updating
+        if (!this.needsUpdate(assignment)) {
+          console.log(`Assignment "${assignment.title}" is up to date - skipping`);
+          results.push({ assignment: assignment.title, success: true, skipped: 'up_to_date' });
+          continue;
+        }
+
+        // Check for duplicates before processing
+        const duplicates = await this.checkForDuplicateTasks(assignment);
+        if (duplicates.length > 0) {
+          console.log(`Handling duplicates for: ${assignment.title}`);
+          await this.handleDuplicateTasks(duplicates, assignment);
+        }
+
+        const result = await this.createOrUpdateTask(assignment);
+        results.push({ assignment: assignment.title, success: true, task: result });
+        
       } catch (error) {
         console.error(`Failed to sync assignment "${assignment.title}":`, error);
+        console.error('Assignment data:', assignment);
+        console.error('Full error:', error);
+        this.debugStorageState(); // Debug storage state on error
         results.push({ assignment: assignment.title, success: false, error: error.message });
       }
     }
 
+    console.log(`Sync completed. Results:`, results);
     return results;
+  }
+
+  // Handle duplicate tasks by removing extras and keeping the most recent
+  async handleDuplicateTasks(duplicates, assignment) {
+    console.log(`Removing ${duplicates.length} duplicate tasks for: ${assignment.title}`);
+    
+    for (const duplicate of duplicates) {
+      try {
+        // Delete the duplicate task
+        const response = await fetch(
+          `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks/${duplicate.id}`,
+          {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${this.accessToken}`,
+            }
+          }
+        );
+
+        if (response.ok) {
+          console.log(`Deleted duplicate task: ${duplicate.id}`);
+        } else {
+          console.error(`Failed to delete duplicate task ${duplicate.id}:`, response.status);
+        }
+      } catch (error) {
+        console.error(`Error deleting duplicate task ${duplicate.id}:`, error);
+      }
+    }
+  }
+
+  // Clean up orphaned tasks (tasks that no longer have corresponding assignments)
+  async cleanupOrphanedTasks(currentAssignments) {
+    try {
+      console.log('Checking for orphaned tasks...');
+      
+      // Get all current tasks
+      const response = await fetch(
+        `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.accessToken}`,
+          }
+        }
+      );
+
+      if (!response.ok) {
+        console.log('Could not fetch tasks for cleanup');
+        return;
+      }
+
+      const data = await response.json();
+      const allTasks = data.items || [];
+      
+      // Get current assignment titles for comparison
+      const currentTitles = new Set(currentAssignments.map(a => a.fullTitle));
+      
+      // Find tasks that are synced from Gradescope but no longer exist in current assignments
+      const orphanedTasks = allTasks.filter(task => 
+        task.notes && 
+        task.notes.includes('Synced from Gradescope') && 
+        !currentTitles.has(task.title)
+      );
+
+      if (orphanedTasks.length > 0) {
+        console.log(`Found ${orphanedTasks.length} orphaned tasks to clean up`);
+        
+        for (const orphan of orphanedTasks) {
+          try {
+            console.log(`Deleting orphaned task: ${orphan.title}`);
+            
+            const deleteResponse = await fetch(
+              `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks/${orphan.id}`,
+              {
+                method: 'DELETE',
+                headers: {
+                  'Authorization': `Bearer ${this.accessToken}`,
+                }
+              }
+            );
+
+            if (deleteResponse.ok) {
+              console.log(`Successfully deleted orphaned task: ${orphan.title}`);
+              
+              // Remove from our storage as well
+              for (const [assignmentId, syncData] of this.syncedAssignments.entries()) {
+                if (syncData.taskId === orphan.id) {
+                  this.syncedAssignments.delete(assignmentId);
+                  break;
+                }
+              }
+            }
+          } catch (error) {
+            console.error(`Error deleting orphaned task ${orphan.title}:`, error);
+          }
+        }
+        
+        // Save updated storage
+        await this.saveSyncedAssignments();
+      } else {
+        console.log('No orphaned tasks found');
+      }
+    } catch (error) {
+      console.error('Error during orphaned task cleanup:', error);
+    }
   }
 
   // Load synced assignments from storage
@@ -292,6 +560,10 @@ class CalendarManager {
       chrome.storage.local.get(['syncedAssignments'], (result) => {
         if (result.syncedAssignments) {
           this.syncedAssignments = new Map(Object.entries(result.syncedAssignments));
+          console.log('Loaded synced assignments:', this.syncedAssignments.size);
+          console.log('Synced assignments data:', Array.from(this.syncedAssignments.entries()));
+        } else {
+          console.log('No synced assignments found in storage');
         }
         resolve();
       });
@@ -301,6 +573,7 @@ class CalendarManager {
   // Save synced assignments to storage
   async saveSyncedAssignments() {
     const data = Object.fromEntries(this.syncedAssignments);
+    console.log('Saving synced assignments to storage:', data);
     return new Promise((resolve) => {
       chrome.storage.local.set({ syncedAssignments: data }, resolve);
     });
@@ -309,28 +582,229 @@ class CalendarManager {
   // Check if assignment needs update
   needsUpdate(assignment) {
     const syncData = this.syncedAssignments.get(assignment.id);
-    if (!syncData) return true; // New assignment
     
-    return syncData.lastStatus !== assignment.statusAbbr; // Status changed
+    if (!syncData) {
+      console.log(`Assignment ${assignment.title} is new - needs sync`);
+      return true; // New assignment
+    }
+
+    // Check if status changed
+    if (!syncData.lastStatus) {
+      console.log(`Assignment ${assignment.title} has no previous status - needs sync`);
+      return true; // No previous status recorded
+    }
+    
+    const statusChanged = syncData.lastStatus !== assignment.statusAbbr;
+    const hasValidTaskId = syncData.taskId && syncData.taskId.trim() !== '';
+    
+    if (statusChanged) {
+      console.log(`Assignment ${assignment.title} status changed: ${syncData.lastStatus} → ${assignment.statusAbbr}`);
+      return true;
+    }
+    
+    if (!hasValidTaskId) {
+      console.log(`Assignment ${assignment.title} has invalid task ID - needs sync`);
+      return true;
+    }
+    
+    console.log(`Assignment ${assignment.title} is up to date - skipping`);
+    return false; // No changes needed
+  }
+
+  // Check if this assignment is already synced and valid
+  isAlreadySynced(assignment) {
+    const syncData = this.syncedAssignments.get(assignment.id);
+    
+    if (!syncData || !syncData.taskId) {
+      return false;
+    }
+    
+    // Check if status matches and task ID exists
+    return syncData.lastStatus === assignment.statusAbbr && 
+           syncData.taskId && 
+           syncData.taskId.trim() !== '';
+  }
+
+  // Prevent duplicate task creation by checking existing tasks
+  async checkForDuplicateTasks(assignment) {
+    try {
+      // Search for tasks with the same title to detect duplicates
+      const response = await fetch(
+        `https://www.googleapis.com/tasks/v1/lists/${this.taskListId}/tasks`,
+        {
+          headers: {
+            'Authorization': `Bearer ${this.accessToken}`,
+          }
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        const tasks = data.items || [];
+        
+        // Look for tasks with matching title
+        const duplicates = tasks.filter(task => 
+          task.title === assignment.fullTitle && 
+          task.id !== this.generateTaskId(assignment)
+        );
+        
+        if (duplicates.length > 0) {
+          console.warn(`Found ${duplicates.length} duplicate tasks for: ${assignment.title}`);
+          console.log('Duplicate task IDs:', duplicates.map(t => t.id));
+          return duplicates;
+        }
+      }
+    } catch (error) {
+      console.error('Error checking for duplicates:', error);
+    }
+    
+    return [];
   }
 }
 
-// Initialize calendar manager
-const calendarManager = new CalendarManager();
+// Initialize task manager
+const taskManager = new TaskManager();
+
+// Auto-sync timer
+let autoSyncTimer = null;
 
 // Load stored data on startup
 async function initializeExtension() {
   // Load synced assignments
-  await calendarManager.loadSyncedAssignments();
+  await taskManager.loadSyncedAssignments();
   
-  // Load stored client ID
+  // Load stored client ID and token
   chrome.storage.local.get(['googleClientId'], (result) => {
     if (result.googleClientId) {
-      calendarManager.setClientId(result.googleClientId);
+      taskManager.setClientId(result.googleClientId);
       console.log('Loaded stored Client ID');
+      
+      // Also try to load stored access token
+      taskManager.loadStoredToken();
     }
   });
+
+  // Set up auto-sync (default: every 5 minutes)
+  await setupAutoSync();
 }
+
+// Set up automatic syncing using chrome.alarms API (more reliable in Manifest V3)
+async function setupAutoSync() {
+  // Get sync interval from storage (default: 5 minutes)
+  const result = await new Promise((resolve) => {
+    chrome.storage.local.get(['syncInterval'], (result) => {
+      resolve(result);
+    });
+  });
+
+  const syncInterval = result.syncInterval || 5; // Default 5 minutes
+  console.log(`Setting up auto-sync every ${syncInterval} minutes using chrome.alarms`);
+
+  // Clear existing alarms
+  chrome.alarms.clear('autoSync');
+
+  // Create a new alarm for auto-sync
+  chrome.alarms.create('autoSync', {
+    delayInMinutes: syncInterval,
+    periodInMinutes: syncInterval
+  });
+
+  // Also set up a backup timer for immediate testing
+  if (autoSyncTimer) {
+    clearInterval(autoSyncTimer);
+  }
+
+  autoSyncTimer = setInterval(async () => {
+    console.log('Timer-based auto-sync triggered');
+    await performAutoSync();
+  }, syncInterval * 60 * 1000);
+
+  console.log(`Auto-sync configured: alarm every ${syncInterval} minutes + timer backup`);
+
+  // Also set the default value in storage if not set
+  if (!result.syncInterval) {
+    chrome.storage.local.set({ syncInterval: 5 });
+  }
+
+  // Log the next expected sync time
+  const nextSync = new Date(Date.now() + syncInterval * 60 * 1000);
+  console.log(`Next auto-sync scheduled for: ${nextSync.toLocaleString()}`);
+}
+
+// Perform automatic sync
+async function performAutoSync() {
+  const currentTime = new Date().toLocaleString();
+  console.log(`🔄 Auto-sync triggered at: ${currentTime}`);
+
+  try {
+    // Check if we have a client ID first
+    if (!taskManager.clientId) {
+      console.log('⚠️ No client ID configured - skipping auto-sync');
+      return;
+    }
+
+    // Check if we have authentication
+    if (!taskManager.accessToken) {
+      console.log('🔑 No access token, attempting to load stored token...');
+      const hasValidToken = await taskManager.loadStoredToken();
+      if (!hasValidToken) {
+        console.log('❌ No valid token available for auto-sync');
+        return;
+      } else {
+        console.log('✅ Successfully loaded stored access token');
+      }
+    }
+
+    // Get the latest assignments data
+    const result = await new Promise((resolve) => {
+      chrome.storage.local.get(['latestAssignments'], (result) => {
+        resolve(result);
+      });
+    });
+
+    if (result.latestAssignments && result.latestAssignments.assignments) {
+      console.log(`📚 Auto-syncing ${result.latestAssignments.assignments.length} assignments from ${result.latestAssignments.courseName}`);
+      
+      // First, clean up any orphaned tasks
+      await taskManager.cleanupOrphanedTasks(result.latestAssignments.assignments);
+      
+      // Then sync current assignments
+      const syncResults = await taskManager.syncAssignments(result.latestAssignments.assignments);
+      console.log('📊 Auto-sync results:', syncResults);
+
+      // Update last sync time with detailed info
+      const syncTime = new Date().toISOString();
+      chrome.storage.local.set({ 
+        lastSyncTime: syncTime,
+        lastAutoSyncTime: syncTime,
+        lastSyncType: 'auto'
+      });
+      
+      console.log(`✅ Auto-sync completed successfully at ${currentTime}`);
+    } else {
+      console.log('📭 No assignments data available for auto-sync');
+      console.log('💡 Visit a Gradescope course page to populate assignment data');
+    }
+  } catch (error) {
+    console.error('❌ Auto-sync failed:', error);
+    
+    // Store error info
+    chrome.storage.local.set({ 
+      lastSyncError: error.message,
+      lastSyncErrorTime: new Date().toISOString()
+    });
+  }
+}
+
+// Handle chrome.alarms events
+chrome.alarms.onAlarm.addListener((alarm) => {
+  console.log(`🚨 Alarm triggered: ${alarm.name}`);
+  
+  if (alarm.name === 'autoSync') {
+    console.log('⏰ Auto-sync alarm fired');
+    performAutoSync();
+  }
+});
 
 initializeExtension();
 
@@ -346,7 +820,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Keep message channel open for async response
 
       case 'SYNC_TO_CALENDAR':
-        syncToCalendar(request.assignments, sendResponse);
+        syncToTasks(request.assignments, sendResponse);
         return true;
 
       case 'GET_SYNC_STATUS':
@@ -359,6 +833,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'SET_CLIENT_ID':
         setClientId(request.clientId, sendResponse);
+        return true;
+
+      case 'UPDATE_SYNC_INTERVAL':
+        updateSyncInterval(request.interval, sendResponse);
         return true;
 
       default:
@@ -383,33 +861,47 @@ async function handleAssignmentsData(data, sendResponse) {
       chrome.storage.local.set({ latestAssignments: data }, resolve);
     });
 
-    // Check if auto-sync is enabled
-    const settings = await new Promise((resolve) => {
-      chrome.storage.local.get(['autoSync'], (result) => {
-        resolve(result.autoSync || false);
-      });
-    });
-
-    if (settings) {
-      // Auto-sync assignments
-      const results = await calendarManager.syncAssignments(data.assignments);
-      console.log('Auto-sync results:', results);
+    // Always auto-sync assignments when they are found/updated
+    console.log('Auto-syncing assignments for course:', data.courseName);
+    
+    // Check if we have authentication
+    if (!taskManager.accessToken) {
+      // Try to load stored token first
+      const hasValidToken = await taskManager.loadStoredToken();
+      if (!hasValidToken) {
+        console.log('No valid token available for auto-sync');
+        sendResponse({ success: false, error: 'Authentication required' });
+        return;
+      }
     }
 
-    sendResponse({ success: true });
+    const results = await taskManager.syncAssignments(data.assignments);
+    console.log('Auto-sync results:', results);
+
+    // Store last sync time
+    chrome.storage.local.set({ lastSyncTime: new Date().toISOString() });
+
+    sendResponse({ success: true, results });
   } catch (error) {
     console.error('Error handling assignments data:', error);
     sendResponse({ success: false, error: error.message });
   }
 }
 
-// Sync assignments to calendar
-async function syncToCalendar(assignments, sendResponse) {
+// Sync assignments to tasks
+async function syncToTasks(assignments, sendResponse) {
   try {
-    const results = await calendarManager.syncAssignments(assignments);
+    console.log('Starting manual sync with cleanup...');
+    
+    // First, clean up any orphaned tasks
+    await taskManager.cleanupOrphanedTasks(assignments);
+    
+    // Then sync current assignments
+    const results = await taskManager.syncAssignments(assignments);
+    
     sendResponse({ success: true, results: results });
   } catch (error) {
-    console.error('Error syncing to calendar:', error);
+    console.error('Error syncing to tasks:', error);
     sendResponse({ success: false, error: error.message });
   }
 }
@@ -417,7 +909,7 @@ async function syncToCalendar(assignments, sendResponse) {
 // Get sync status
 async function getSyncStatus(sendResponse) {
   try {
-    const syncedCount = calendarManager.syncedAssignments.size;
+    const syncedCount = taskManager.syncedAssignments.size;
     const lastSync = await new Promise((resolve) => {
       chrome.storage.local.get(['lastSyncTime'], (result) => {
         resolve(result.lastSyncTime);
@@ -428,7 +920,7 @@ async function getSyncStatus(sendResponse) {
       success: true,
       syncedCount: syncedCount,
       lastSync: lastSync,
-      isAuthenticated: !!calendarManager.accessToken
+      isAuthenticated: !!taskManager.accessToken
     };
 
     console.log('Sending sync status:', response);
@@ -443,7 +935,7 @@ async function getSyncStatus(sendResponse) {
 async function authenticateUser(sendResponse) {
   try {
     console.log('Starting authentication...');
-    const token = await calendarManager.authenticate();
+    const token = await taskManager.authenticate();
     console.log('Authentication successful');
     sendResponse({ success: true, token: token });
   } catch (error) {
@@ -456,7 +948,7 @@ async function authenticateUser(sendResponse) {
 async function setClientId(clientId, sendResponse) {
   try {
     console.log('Setting client ID:', clientId);
-    calendarManager.setClientId(clientId);
+    taskManager.setClientId(clientId);
     
     // Store in extension storage as well
     await new Promise((resolve) => {
@@ -466,6 +958,26 @@ async function setClientId(clientId, sendResponse) {
     sendResponse({ success: true });
   } catch (error) {
     console.error('Error setting client ID:', error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// Update sync interval
+async function updateSyncInterval(interval, sendResponse) {
+  try {
+    console.log('Updating sync interval to:', interval, 'minutes');
+    
+    // Store the new interval
+    await new Promise((resolve) => {
+      chrome.storage.local.set({ syncInterval: interval }, resolve);
+    });
+    
+    // Restart auto-sync with new interval
+    await setupAutoSync();
+    
+    sendResponse({ success: true });
+  } catch (error) {
+    console.error('Error updating sync interval:', error);
     sendResponse({ success: false, error: error.message });
   }
 }
@@ -480,3 +992,4 @@ chrome.runtime.onInstalled.addListener(() => {
     syncInterval: 60 // minutes
   });
 });
+

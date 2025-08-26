@@ -1,135 +1,65 @@
-// Test script to verify assignment parsing logic
-// This can be run in browser console on the test HTML files
+// Test parser to debug Gradescope assignment parsing
+// Run this in browser console on the test HTML file
 
-// Simulate the GradescopeParser class for testing
-class TestGradescopeParser {
-  constructor() {
-    this.assignments = [];
-    this.courseName = '';
-  }
-
-  extractCourseName() {
-    const courseHeader = document.querySelector('.courseHeader--title');
-    if (courseHeader) {
-      const fullTitle = courseHeader.textContent.trim();
-      // Extract just the course code (e.g., "MATH 303" from "MATH 303: 02 (12pm)")
-      const match = fullTitle.match(/^([A-Z]+ \d+)/);
-      this.courseName = match ? match[1] : fullTitle;
-    }
-    return this.courseName;
-  }
-
-  parseAssignments() {
-    const assignments = [];
-    const rows = document.querySelectorAll('#assignments-student-table tbody tr[role="row"]');
-    
-    console.log(`Found ${rows.length} assignment rows`);
-    
-    rows.forEach((row, index) => {
-      const assignment = this.parseAssignmentRow(row);
-      if (assignment) {
-        assignments.push(assignment);
-        console.log(`Assignment ${index + 1}:`, assignment);
-      }
-    });
-
-    this.assignments = assignments;
-    return assignments;
-  }
-
-  parseAssignmentRow(row) {
-    try {
-      // Get assignment name from data-assignment-title attribute
-      const assignmentButton = row.querySelector('.js-submitAssignment');
-      if (!assignmentButton) return null;
-
-      const assignmentTitle = assignmentButton.getAttribute('data-assignment-title');
-      if (!assignmentTitle) return null;
-
-      // Get submission status
-      const statusElement = row.querySelector('.submissionStatus--text');
-      const status = statusElement ? statusElement.textContent.trim() : 'Unknown';
-      
-      // Determine status abbreviation
-      let statusAbbr = 'IP'; // In Progress
-      if (status.toLowerCase().includes('submitted') || status.toLowerCase().includes('complete')) {
-        statusAbbr = 'SUBMITTED';
-      } else if (status.toLowerCase().includes('no submission')) {
-        statusAbbr = 'IP';
-      }
-
-      // Get due date
-      const dueDateElement = row.querySelector('.submissionTimeChart--dueDate');
-      let dueDate = null;
-      if (dueDateElement) {
-        const dateTimeAttr = dueDateElement.getAttribute('datetime');
-        if (dateTimeAttr) {
-          dueDate = new Date(dateTimeAttr);
-        }
-      }
-
-      // Get assignment ID for tracking
-      const assignmentId = assignmentButton.getAttribute('data-assignment-id');
-
-      return {
-        id: assignmentId,
-        title: assignmentTitle,
-        status: status,
-        statusAbbr: statusAbbr,
-        dueDate: dueDate,
-        courseName: this.courseName,
-        fullTitle: `${this.courseName}: ${assignmentTitle} (${statusAbbr})`
-      };
-    } catch (error) {
-      console.error('Error parsing assignment row:', error);
-      return null;
-    }
-  }
-
-  getAllData() {
-    this.extractCourseName();
-    this.parseAssignments();
-    
-    return {
-      courseName: this.courseName,
-      assignments: this.assignments
-    };
-  }
-}
-
-// Test function to run the parser
 function testParser() {
-  console.log('Testing Gradescope Assignment Parser...');
+  console.log('=== TESTING GRADESCOPE PARSER ===');
   
-  const parser = new TestGradescopeParser();
-  const data = parser.getAllData();
+  // Test course name extraction
+  const courseHeader = document.querySelector('.courseHeader--title');
+  if (courseHeader) {
+    const fullTitle = courseHeader.textContent.trim();
+    const match = fullTitle.match(/^([A-Z]+ \d+)/);
+    const courseName = match ? match[1] : fullTitle;
+    console.log('Course name:', courseName);
+  } else {
+    console.log('Course header not found');
+  }
   
-  console.log('=== PARSING RESULTS ===');
-  console.log('Course Name:', data.courseName);
-  console.log('Number of Assignments:', data.assignments.length);
+  // Test assignment parsing
+  const rows = document.querySelectorAll('#assignments-student-table tbody tr[role="row"]');
+  console.log('Found', rows.length, 'assignment rows');
   
-  data.assignments.forEach((assignment, index) => {
-    console.log(`\n--- Assignment ${index + 1} ---`);
-    console.log('ID:', assignment.id);
-    console.log('Title:', assignment.title);
-    console.log('Status:', assignment.status);
-    console.log('Status Abbr:', assignment.statusAbbr);
-    console.log('Due Date:', assignment.dueDate);
-    console.log('Full Title:', assignment.fullTitle);
-    console.log('Due Date String:', assignment.dueDate ? assignment.dueDate.toLocaleString() : 'No due date');
-  });
-  
-  console.log('\n=== CALENDAR FORMAT PREVIEW ===');
-  data.assignments.forEach((assignment, index) => {
-    if (assignment.dueDate) {
-      console.log(`${index + 1}. ${assignment.fullTitle}`);
-      console.log(`   Due: ${assignment.dueDate.toLocaleString()}`);
-      console.log(`   Calendar Event: 1 hour ending at ${assignment.dueDate.toLocaleString()}`);
+  rows.forEach((row, index) => {
+    console.log(`\n=== Assignment ${index + 1} ===`);
+    
+    // Get assignment button
+    const assignmentButton = row.querySelector('.js-submitAssignment');
+    if (assignmentButton) {
+      const assignmentTitle = assignmentButton.getAttribute('data-assignment-title');
+      const assignmentId = assignmentButton.getAttribute('data-assignment-id');
+      console.log('Title:', assignmentTitle);
+      console.log('ID:', assignmentId);
+    } else {
+      console.log('Assignment button not found');
+    }
+    
+    // Get submission status
+    const statusElement = row.querySelector('.submissionStatus--text');
+    if (statusElement) {
+      const status = statusElement.textContent.trim();
+      console.log('Status:', status);
+    } else {
+      console.log('Status element not found');
+    }
+    
+    // Get due date
+    const dueDateElement = row.querySelector('.submissionTimeChart--dueDate');
+    if (dueDateElement) {
+      const dateTimeAttr = dueDateElement.getAttribute('datetime');
+      const dateText = dueDateElement.textContent.trim();
+      console.log('Due date attr:', dateTimeAttr);
+      console.log('Due date text:', dateText);
+      
+      if (dateTimeAttr) {
+        const dueDate = new Date(dateTimeAttr);
+        console.log('Parsed date:', dueDate);
+        console.log('ISO string:', dueDate.toISOString());
+      }
+    } else {
+      console.log('Due date element not found');
     }
   });
-  
-  return data;
 }
 
 // Run the test
-console.log('To test the parser, run: testParser()');
+testParser();
